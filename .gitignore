@@ -1,0 +1,20 @@
+# Environment
+venv/
+.env
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+
+# Generated data and database
+data/raw/*
+data/processed/*
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+*.db
+*.sqlite
+
+# Editor (optional)
+.vscode/
