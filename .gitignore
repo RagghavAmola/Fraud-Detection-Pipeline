@@ -15,6 +15,7 @@ data/processed/*
 !data/processed/.gitkeep
 *.db
 *.sqlite
+data/_check_*.py
 
 # Editor (optional)
 .vscode/
