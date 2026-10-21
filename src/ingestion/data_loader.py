@@ -641,7 +641,11 @@ def generate_synthetic_transactions(
     fake = Faker()
     Faker.seed(seed)
 
-    window_start = datetime.now() - timedelta(days=window_days)
+    # Observation window anchored to midnight (00:00:00) so that daily
+    # second-offsets align with actual 24-hour calendar time of day.
+    window_start = (datetime.now() - timedelta(days=window_days)).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
     window_seconds = window_days * 86_400
 
     # ------------------------------------------------------------------
