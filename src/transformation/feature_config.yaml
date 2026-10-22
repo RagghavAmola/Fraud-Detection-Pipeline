@@ -1,0 +1,44 @@
+# ===========================================================================
+# Feature Engineering Configuration
+# ===========================================================================
+
+# Time-based rolling transaction velocity windows per card
+velocity_windows:
+  velocity_1h: "1h"        # Trailing 1-hour transaction count
+  velocity_10min: "10min"  # Trailing 10-minute transaction count for rapid-fire bursts
+  closed: "both"           # Window boundary: [t - window, t] (includes current transaction)
+
+# Odd hour detection window: flags transactions occurring between start_hour and end_hour (inclusive)
+# Hours 1, 2, 3, 4 represent 1:00 AM - 4:59 AM window
+odd_hour_window:
+  start_hour: 1
+  end_hour: 4
+
+# Merchant category risk tier classification
+# Categories align with src.ingestion.data_loader taxonomy
+merchant_risk_tiers:
+  high:
+    - "Crypto Exchange"
+    - "Online Gambling"
+    - "Pawnshop"
+    - "Money Transfer"
+    - "Adult Content"
+  medium:
+    - "Travel"
+    - "Retail"
+    - "Entertainment"
+    - "Restaurant"
+  low:
+    - "Grocery"
+    - "Fuel"
+    - "Healthcare"
+    - "Utilities"
+    - "Subscription"
+    - "Transportation"
+  default: "low"
+
+# ---------------------------------------------------------------------------
+# Reserved configurations for upcoming pipeline passes
+# ---------------------------------------------------------------------------
+warmup_length_days: 14       # Baseline card warm-up duration before scoring
+geo_window_hours: 24         # Trailing window for geographic velocity & distance checks

@@ -16,6 +16,7 @@ data/processed/*
 *.db
 *.sqlite
 data/_check_*.py
+scripts/_check_*.py
 
 # Editor (optional)
 .vscode/
