@@ -228,6 +228,7 @@ class FeatureEngineer:
         7. amount_zscore: Deviation of transaction amount from card's prior historical mean/std.
         8. is_new_merchant: Boolean flag if merchant_name has not been seen before on this card.
         9. geo_jump_flag: Boolean flag if transaction_country differs from prior country in < 3 hours.
+        10. is_foreign_country: Boolean flag if transaction_country differs from card's home country.
 
         Vectorized Pandas only (groupby, rolling, shift). All original columns are preserved.
         is_fraud_actual passes through untouched and is NEVER used as an input to any feature.
@@ -252,6 +253,7 @@ class FeatureEngineer:
             df["amount_zscore"] = pd.Series(dtype=float)
             df["is_new_merchant"] = pd.Series(dtype=bool)
             df["geo_jump_flag"] = pd.Series(dtype=bool)
+            df["is_foreign_country"] = pd.Series(dtype=bool)
             return df
 
         # ------------------------------------------------------------------
@@ -413,6 +415,37 @@ class FeatureEngineer:
         )
         df["geo_jump_flag"] = country_changed & time_too_short
 
+        # ------------------------------------------------------------------
+        # 10. Foreign Country Indicator
+        #
+        # Evaluates whether transaction_country differs from the card's inferred home country.
+        # Home country is defined as the most frequent transaction_country during that card's
+        # warm-up transactions (warmup_length_txns), breaking ties alphabetically.
+        # Strict requirement: uses transaction_country (do NOT use merchant_country).
+        # False on warm-up rows (is_warmup == True), consistent with other baseline features.
+        # ------------------------------------------------------------------
+        warmup_df = df[df["is_warmup"]]
+        country_counts = (
+            warmup_df.groupby(["card_id", "transaction_country"], sort=True)
+            .size()
+            .reset_index(name="count")
+        )
+        sorted_counts = country_counts.sort_values(
+            by=["card_id", "count", "transaction_country"],
+            ascending=[True, False, True],
+        )
+        home_country_map = (
+            sorted_counts.drop_duplicates(subset=["card_id"], keep="first")
+            .set_index("card_id")["transaction_country"]
+        )
+
+        card_home_country = df["card_id"].map(home_country_map)
+        df["is_foreign_country"] = (
+            (~df["is_warmup"])
+            & (df["transaction_country"] != card_home_country)
+            & card_home_country.notna()
+        )
+
         return df
 
     def transform(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -495,6 +528,7 @@ if __name__ == "__main__":
         "amount_zscore",
         "is_new_merchant",
         "geo_jump_flag",
+        "is_foreign_country",
         "is_fraud_actual",
     ]
     print("\nSample enriched rows (first 5):")
