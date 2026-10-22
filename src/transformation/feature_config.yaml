@@ -38,7 +38,7 @@ merchant_risk_tiers:
   default: "low"
 
 # ---------------------------------------------------------------------------
-# Reserved configurations for upcoming pipeline passes
+# Card warm-up and geographic velocity parameters
 # ---------------------------------------------------------------------------
-warmup_length_days: 14       # Baseline card warm-up duration before scoring
-geo_window_hours: 24         # Trailing window for geographic velocity & distance checks
+warmup_length_txns: 5        # Number of initial transactions per card considered warm-up
+geo_window_hours: 3          # Max elapsed hours between country changes for geo jump flag (< 3h)

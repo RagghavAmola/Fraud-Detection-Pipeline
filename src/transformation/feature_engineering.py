@@ -59,9 +59,9 @@ DEFAULT_FEATURE_CONFIG: Final[dict[str, Any]] = {
         ],
         "default": "low",
     },
-    # Reserved placeholders for subsequent passes
-    "warmup_length_days": 14,
-    "geo_window_hours": 24,
+    # Card warm-up and geographic velocity parameters
+    "warmup_length_txns": 5,
+    "geo_window_hours": 3,
 }
 
 
@@ -224,6 +224,10 @@ class FeatureEngineer:
         3. seconds_since_prev_txn: Seconds since the same card's previous transaction.
         4. is_odd_hour: Boolean flag for transactions occurring in odd hours [1, 4].
         5. merchant_risk_category: Risk tier ('low', 'medium', 'high') mapped from merchant_category.
+        6. is_warmup: Boolean flag for each card's initial warm-up transactions (first 5).
+        7. amount_zscore: Deviation of transaction amount from card's prior historical mean/std.
+        8. is_new_merchant: Boolean flag if merchant_name has not been seen before on this card.
+        9. geo_jump_flag: Boolean flag if transaction_country differs from prior country in < 3 hours.
 
         Vectorized Pandas only (groupby, rolling, shift). All original columns are preserved.
         is_fraud_actual passes through untouched and is NEVER used as an input to any feature.
@@ -244,6 +248,10 @@ class FeatureEngineer:
             df["seconds_since_prev_txn"] = pd.Series(dtype=float)
             df["is_odd_hour"] = pd.Series(dtype=bool)
             df["merchant_risk_category"] = pd.Series(dtype=object)
+            df["is_warmup"] = pd.Series(dtype=bool)
+            df["amount_zscore"] = pd.Series(dtype=float)
+            df["is_new_merchant"] = pd.Series(dtype=bool)
+            df["geo_jump_flag"] = pd.Series(dtype=bool)
             return df
 
         # ------------------------------------------------------------------
@@ -326,6 +334,85 @@ class FeatureEngineer:
             .astype(str)
         )
 
+        # ------------------------------------------------------------------
+        # 6. Card Warm-up Indicator
+        #
+        # Treats each card's initial transactions (default: 5) as warm-up.
+        # Uses cumcount() per card to determine transaction order sequence.
+        # Warm-up transactions have unknown baseline statistics and are flagged here
+        # rather than using NaN values for downstream features.
+        # ------------------------------------------------------------------
+        warmup_txns: int = int(self.config.get("warmup_length_txns", 5))
+        card_txn_index = df.groupby("card_id", sort=False).cumcount()
+        df["is_warmup"] = card_txn_index < warmup_txns
+
+        # ------------------------------------------------------------------
+        # 7. Amount Z-Score (Historical Deviation)
+        #
+        # Strictly uses prior transactions of the same card (no future leakage).
+        # We shift amounts by 1 per card, then compute cumulative expanding mean and std.
+        # Guard against warm-up rows, NaNs, and std == 0 by assigning neutral 0.0 z-score.
+        # ------------------------------------------------------------------
+        shifted_amount = df.groupby("card_id", sort=False)["amount"].shift(1)
+        exp_mean = (
+            shifted_amount.groupby(df["card_id"], sort=False)
+            .expanding()
+            .mean()
+            .droplevel(0)
+        )
+        exp_std = (
+            shifted_amount.groupby(df["card_id"], sort=False)
+            .expanding()
+            .std()
+            .droplevel(0)
+        )
+
+        valid_zscore_mask = (~df["is_warmup"]) & (exp_std > 0) & exp_std.notna()
+        df["amount_zscore"] = (
+            ((df["amount"] - exp_mean) / exp_std)
+            .where(valid_zscore_mask, 0.0)
+            .astype(float)
+        )
+
+        # ------------------------------------------------------------------
+        # 8. New Merchant Indicator
+        #
+        # Evaluates whether this merchant_name has been seen before for this card_id.
+        # Computed via cumcount() on (card_id, merchant_name): cumcount == 0 represents
+        # the very first appearance of the merchant for that card.
+        # Strictly uses prior transactions (no future leakage).
+        # During warm-up (is_warmup == True), is_new_merchant is set to False (neutral)
+        # so downstream fraud rules do not fire on initial card activation.
+        # ------------------------------------------------------------------
+        merchant_seen_count = df.groupby(
+            ["card_id", "merchant_name"], sort=False
+        ).cumcount()
+        df["is_new_merchant"] = (~df["is_warmup"]) & (merchant_seen_count == 0)
+
+        # ------------------------------------------------------------------
+        # 9. Geographic Jump Flag (Implausible Travel Speed)
+        #
+        # Compares transaction_country with the same card's previous transaction country.
+        # Flags transactions where transaction_country changed and elapsed time is less than
+        # the configured geo travel threshold (geo_window_hours, default: 3 hours).
+        #
+        # NOTE ON FALSE POSITIVES (Return Trip):
+        # We explicitly use transaction_country (NOT merchant_country).
+        # When a foreign fraudulent transaction occurs followed by a legitimate domestic
+        # transaction within 3 hours, the return transaction will ALSO trigger geo_jump_flag.
+        # This is expected behavior for consecutive country differences under tight timeframes,
+        # representing a realistic false positive that downstream rules contextualize.
+        # ------------------------------------------------------------------
+        geo_window_hours: float = float(self.config.get("geo_window_hours", 3))
+        geo_window_seconds: float = geo_window_hours * 3600.0
+
+        prev_country = df.groupby("card_id", sort=False)["transaction_country"].shift(1)
+        country_changed = (df["transaction_country"] != prev_country) & prev_country.notna()
+        time_too_short = df["seconds_since_prev_txn"].notna() & (
+            df["seconds_since_prev_txn"] < geo_window_seconds
+        )
+        df["geo_jump_flag"] = country_changed & time_too_short
+
         return df
 
     def transform(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -404,6 +491,10 @@ if __name__ == "__main__":
         "seconds_since_prev_txn",
         "is_odd_hour",
         "merchant_risk_category",
+        "is_warmup",
+        "amount_zscore",
+        "is_new_merchant",
+        "geo_jump_flag",
         "is_fraud_actual",
     ]
     print("\nSample enriched rows (first 5):")
