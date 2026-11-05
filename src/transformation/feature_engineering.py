@@ -33,6 +33,9 @@ DEFAULT_PROCESSED_DATA_PATH: Final[Path] = (
 DEFAULT_CONFIG_PATH: Final[Path] = (
     Path(__file__).resolve().parent / "feature_config.yaml"
 )
+DEFAULT_COUNTRY_RISK_PATH: Final[Path] = (
+    Path(__file__).resolve().parent / "country_risk.yaml"
+)
 
 DEFAULT_FEATURE_CONFIG: Final[dict[str, Any]] = {
     "velocity_windows": {
@@ -62,6 +65,11 @@ DEFAULT_FEATURE_CONFIG: Final[dict[str, Any]] = {
     # Card warm-up and geographic velocity parameters
     "warmup_length_txns": 5,
     "geo_window_hours": 3,
+    # Country risk configuration
+    "country_risk": {
+        "table_path": "src/transformation/country_risk.yaml",
+        "default_tier": "medium",
+    },
 }
 
 
@@ -89,6 +97,10 @@ class FeatureEngineer:
         """
         self.config = self._load_config(config)
         self.category_risk_map = self._build_category_risk_map()
+        (
+            self.country_risk_map,
+            self.country_risk_default_tier,
+        ) = self._load_country_risk_config()
 
     def _load_config(
         self, config: dict[str, Any] | str | Path | None
@@ -153,6 +165,63 @@ class FeatureEngineer:
                 mapping[cat] = "low"
 
         return mapping
+
+    def _load_country_risk_config(self) -> tuple[dict[str, str], str]:
+        """Load country threat tier lookup table and default tier from config.
+
+        Returns:
+            Tuple of (country_code_to_tier_map, default_tier).
+        """
+        cfg = self.config.get("country_risk", {})
+        default_tier = str(cfg.get("default_tier", "medium")).lower()
+        table_path = cfg.get("table_path")
+
+        country_map: dict[str, str] = {}
+        path: Path | None = None
+
+        if table_path:
+            p = Path(table_path)
+            if p.is_absolute() and p.exists():
+                path = p
+            elif (_REPO_ROOT / p).exists():
+                path = _REPO_ROOT / p
+            elif (Path(__file__).resolve().parent / p).exists():
+                path = Path(__file__).resolve().parent / p
+            elif (Path(__file__).resolve().parent / p.name).exists():
+                path = Path(__file__).resolve().parent / p.name
+
+        if path is None and DEFAULT_COUNTRY_RISK_PATH.exists():
+            path = DEFAULT_COUNTRY_RISK_PATH
+
+        if path and path.exists():
+            with open(path, "r", encoding="utf-8") as f:
+                data = yaml.safe_load(f) or {}
+            if isinstance(data, dict):
+                if "default_tier" in data:
+                    default_tier = str(data["default_tier"]).lower()
+                countries = data.get("countries", [])
+                if isinstance(countries, list):
+                    for item in countries:
+                        if isinstance(item, dict):
+                            code = item.get("code") or item.get("iso_code")
+                            tier = item.get("threat_tier") or item.get("tier")
+                            if code and tier:
+                                country_map[str(code).upper()] = str(tier).lower()
+                elif isinstance(countries, dict):
+                    for code, val in countries.items():
+                        if isinstance(val, dict):
+                            tier = val.get("threat_tier") or val.get("tier")
+                        else:
+                            tier = val
+                        if tier:
+                            country_map[str(code).upper()] = str(tier).lower()
+
+        # Support direct inline mapping in config (useful for tests)
+        if "countries" in cfg and isinstance(cfg["countries"], dict):
+            for code, tier in cfg["countries"].items():
+                country_map[str(code).upper()] = str(tier).lower()
+
+        return country_map, default_tier
 
     def load_raw_data(
         self, filepath: str | Path | None = None
@@ -229,6 +298,7 @@ class FeatureEngineer:
         8. is_new_merchant: Boolean flag if merchant_name has not been seen before on this card.
         9. geo_jump_flag: Boolean flag if transaction_country differs from prior country in < 3 hours.
         10. is_foreign_country: Boolean flag if transaction_country differs from card's home country.
+        11. country_risk_tier: Risk tier ('low', 'medium', 'high') of transaction_country from country risk table.
 
         Vectorized Pandas only (groupby, rolling, shift). All original columns are preserved.
         is_fraud_actual passes through untouched and is NEVER used as an input to any feature.
@@ -254,6 +324,7 @@ class FeatureEngineer:
             df["is_new_merchant"] = pd.Series(dtype=bool)
             df["geo_jump_flag"] = pd.Series(dtype=bool)
             df["is_foreign_country"] = pd.Series(dtype=bool)
+            df["country_risk_tier"] = pd.Series(dtype=object)
             return df
 
         # ------------------------------------------------------------------
@@ -446,6 +517,26 @@ class FeatureEngineer:
             & card_home_country.notna()
         )
 
+        # ------------------------------------------------------------------
+        # 11. Country Risk Tier
+        #
+        # Evaluates the threat tier (low / medium / high) of the transaction's
+        # transaction_country, looked up from the configured country risk table.
+        # Countries not present in the table fall back to default_tier (medium).
+        # Plain per-row lookup without home-country logic or numeric scores.
+        # (Downstream rule engine combines this with is_foreign_country).
+        # Vectorized Pandas only (.map / .fillna). merchant_country and
+        # is_fraud_actual are NOT used.
+        # ------------------------------------------------------------------
+        df["country_risk_tier"] = (
+            df["transaction_country"]
+            .astype(str)
+            .str.upper()
+            .map(self.country_risk_map)
+            .fillna(self.country_risk_default_tier)
+            .astype(str)
+        )
+
         return df
 
     def transform(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -529,6 +620,7 @@ if __name__ == "__main__":
         "is_new_merchant",
         "geo_jump_flag",
         "is_foreign_country",
+        "country_risk_tier",
         "is_fraud_actual",
     ]
     print("\nSample enriched rows (first 5):")

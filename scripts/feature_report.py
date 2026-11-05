@@ -19,6 +19,7 @@ BASELINES: dict[str, tuple[float, float]] = {
     "is_new_merchant": (0.095, 0.730),
     "amount_zscore > 3": (0.006, 0.300),
     "is_foreign_country": (0.000, 0.145),
+    "is_foreign_country AND country_risk_tier == high": (0.000, 0.072),
     "txn_velocity_10min >= 4": (0.000, 0.086),
     "geo_jump_flag": (0.000, 0.007),
 }
@@ -33,6 +34,9 @@ def generate_feature_report(data_path: Path = DATA_PATH) -> pd.DataFrame:
     # Derived boolean flags for reporting
     df["amount_zscore > 3"] = df["amount_zscore"] > 3
     df["txn_velocity_10min >= 4"] = df["txn_velocity_10min"] >= 4
+    df["is_foreign_country AND country_risk_tier == high"] = (
+        df["is_foreign_country"] & (df["country_risk_tier"] == "high")
+    )
 
     normal = df[~df["is_fraud_actual"]]
     fraud = df[df["is_fraud_actual"]]

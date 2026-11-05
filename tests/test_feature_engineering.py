@@ -338,6 +338,7 @@ def test_no_leakage_on_later_transactions():
         "is_new_merchant",
         "geo_jump_flag",
         "is_foreign_country",
+        "country_risk_tier",
     ]
 
     for feat in prior_only_features:
@@ -349,3 +350,67 @@ def test_no_leakage_on_later_transactions():
             check_names=False,
             obj=f"Leakage detected in feature: {feat}",
         )
+
+
+# ===========================================================================
+# 8. Country risk tier tests
+# ===========================================================================
+
+def test_country_risk_tier_known_and_default(tmp_path):
+    """Verify that a known country maps to its tier and an unknown country gets the default tier."""
+    custom_yaml = tmp_path / "custom_risk.yaml"
+    custom_yaml.write_text(
+        """
+default_tier: "medium"
+countries:
+  - code: "US"
+    threat_tier: "low"
+  - code: "KP"
+    threat_tier: "high"
+""",
+        encoding="utf-8",
+    )
+
+    engineer = FeatureEngineer(
+        config={
+            "country_risk": {
+                "table_path": str(custom_yaml),
+                "default_tier": "medium",
+            }
+        }
+    )
+
+    t0 = datetime(2026, 1, 1, 10, 0, 0)
+    rows = [
+        _build_base_transaction("T0", "CARD-1", t0, transaction_country="US"),     # Known -> low
+        _build_base_transaction("T1", "CARD-1", t0 + timedelta(hours=1), transaction_country="KP"), # Known -> high
+        _build_base_transaction("T2", "CARD-1", t0 + timedelta(hours=2), transaction_country="ZZ"), # Unknown -> default (medium)
+    ]
+    df = pd.DataFrame(rows)
+    enriched = engineer.compute_features(df)
+
+    assert enriched.loc[0, "country_risk_tier"] == "low"
+    assert enriched.loc[1, "country_risk_tier"] == "high"
+    assert enriched.loc[2, "country_risk_tier"] == "medium"
+
+
+def test_country_risk_tier_only_valid_tiers():
+    """Verify that country_risk_tier output contains only 'low', 'medium', or 'high' across all rows."""
+    engineer = FeatureEngineer()
+    t0 = datetime(2026, 1, 1, 10, 0, 0)
+
+    # Various countries: known low, known medium, known high, unknown/missing
+    countries = ["US", "GB", "CN", "BR", "KP", "IR", "NG", "XX", "YY", "AU", "DE"]
+    rows = [
+        _build_base_transaction(f"T{i}", f"CARD-{i}", t0 + timedelta(hours=i), transaction_country=countries[i])
+        for i in range(len(countries))
+    ]
+    df = pd.DataFrame(rows)
+    enriched = engineer.compute_features(df)
+
+    allowed_tiers = {"low", "medium", "high"}
+    actual_tiers = set(enriched["country_risk_tier"].unique())
+    assert actual_tiers.issubset(allowed_tiers), f"Unexpected tiers: {actual_tiers - allowed_tiers}"
+    assert "low" in actual_tiers
+    assert "medium" in actual_tiers
+    assert "high" in actual_tiers

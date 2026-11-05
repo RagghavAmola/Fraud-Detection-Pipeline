@@ -1,0 +1,85 @@
+# ===========================================================================
+# Illustrative Country Risk Tier Reference Table
+# ===========================================================================
+# As of 30 October 2026. high = on the FATF black list or grey list, or subject to extensive sanctions.
+#
+# High-tier basis:
+#   - KP and IR: FATF black list
+#   - AO and VN: FATF grey list
+#   - RU (Russia): not on the FATF black or grey list; high tier is based on extensive US/EU/UK sanctions (FATF membership is suspended).
+#
+# Medium-tier basis:
+#   - CN, BR, IN: Emerging markets and regional financial hubs with moderate
+#     AML/CFT exposure or cash-intensive monitoring.
+#   - NG, PK: Not on FATF black or grey lists; compliance monitoring.
+#   - RO: EU member state with moderate cyber fraud monitoring profile.
+#   - UA: Active conflict zone financial integrity monitoring.
+#
+# Low-tier basis:
+#   - US, GB, CA, AU, DE, FR, JP, SG: Major FATF core member jurisdictions with
+#     advanced economies, mature regulatory frameworks, and low baseline risk.
+# ===========================================================================
+
+default_tier: "medium"
+
+countries:
+  - code: "AO"
+    name: "Angola"
+    threat_tier: "high"  # FATF grey list
+  - code: "AU"
+    name: "Australia"
+    threat_tier: "low"
+  - code: "BR"
+    name: "Brazil"
+    threat_tier: "medium"
+  - code: "CA"
+    name: "Canada"
+    threat_tier: "low"
+  - code: "CN"
+    name: "China"
+    threat_tier: "medium"
+  - code: "DE"
+    name: "Germany"
+    threat_tier: "low"
+  - code: "FR"
+    name: "France"
+    threat_tier: "low"
+  - code: "GB"
+    name: "United Kingdom"
+    threat_tier: "low"
+  - code: "IN"
+    name: "India"
+    threat_tier: "medium"
+  - code: "IR"
+    name: "Iran"
+    threat_tier: "high"  # FATF black list
+  - code: "JP"
+    name: "Japan"
+    threat_tier: "low"
+  - code: "KP"
+    name: "North Korea"
+    threat_tier: "high"  # FATF black list
+  - code: "NG"
+    name: "Nigeria"
+    threat_tier: "medium"
+  - code: "PK"
+    name: "Pakistan"
+    threat_tier: "medium"
+  - code: "RO"
+    name: "Romania"
+    threat_tier: "medium"
+  - code: "RU"
+    name: "Russia"
+    threat_tier: "high"  # RU (Russia): not on the FATF black or grey list; high tier is based on extensive US/EU/UK sanctions (FATF membership is suspended).
+  - code: "SG"
+    name: "Singapore"
+    threat_tier: "low"
+  - code: "UA"
+    name: "Ukraine"
+    threat_tier: "medium"
+  - code: "US"
+    name: "United States"
+    threat_tier: "low"
+  - code: "VN"
+    name: "Vietnam"
+    threat_tier: "high"  # FATF grey list

@@ -42,3 +42,9 @@ merchant_risk_tiers:
 # ---------------------------------------------------------------------------
 warmup_length_txns: 5        # Number of initial transactions per card considered warm-up
 geo_window_hours: 3          # Max elapsed hours between country changes for geo jump flag (< 3h)
+
+# Country risk tier configuration
+country_risk:
+  table_path: "src/transformation/country_risk.yaml"
+  default_tier: "medium"
+
