@@ -14,6 +14,7 @@ from typing import Final, cast
 
 import numpy as np
 import pandas as pd
+import yaml
 from faker import Faker
 
 # ---------------------------------------------------------------------------
@@ -70,6 +71,21 @@ HOME_COUNTRIES: Final[list[str]] = [
 ABROAD_COUNTRIES: Final[list[str]] = [
     "NG", "RU", "CN", "UA", "RO", "VN", "KP", "IR", "PK", "AO",
 ]
+
+# Travel episode configuration
+TRAVEL_CARD_FRAC: Final[float] = 0.04
+TRAVEL_HIGH_RISK_FRAC: Final[float] = 0.12
+TRAVEL_PRIMARY_CATEGORIES: Final[list[str]] = [
+    "Restaurant",
+    "Retail",
+    "Travel",
+    "Fuel",
+]
+TRAVEL_CHANNEL_OPTIONS: Final[list[str]] = ["in-store", "online", "atm"]
+TRAVEL_CHANNEL_WEIGHTS: Final[list[float]] = [0.80, 0.15, 0.05]
+_COUNTRY_RISK_PATH: Final[Path] = (
+    Path(__file__).resolve().parents[1] / "transformation" / "country_risk.yaml"
+)
 
 # Output path (relative to the repo root)
 _RAW_DATA_DIR: Final[Path] = Path(__file__).resolve().parents[2] / "data" / "raw"
@@ -575,6 +591,185 @@ def _inject_risky_merchants(
     )
 
 
+def _load_travel_destination_pools(
+    config_path: Path = _COUNTRY_RISK_PATH,
+) -> tuple[list[str], list[str]]:
+    """Load allowable foreign travel destinations from country_risk.yaml.
+
+    Returns:
+        tuple containing:
+          - low_med: list of ISO country codes in low and medium threat tiers.
+          - high_travel_ok: list of ISO country codes in high threat tier that
+            have travel_ok: True (e.g. FATF grey-list countries, excluding
+            black-list or sanctioned countries).
+    """
+    with open(config_path, "r", encoding="utf-8") as f:
+        data = yaml.safe_load(f)
+    countries = data.get("countries", [])
+    low_med = [
+        c["code"] for c in countries if c.get("threat_tier") in ("low", "medium")
+    ]
+    high_travel_ok = [
+        c["code"]
+        for c in countries
+        if c.get("threat_tier") == "high" and c.get("travel_ok") is True
+    ]
+    return low_med, high_travel_ok
+
+
+def _inject_travel_episodes(
+    normal_df: pd.DataFrame,
+    anomaly_parts: list[pd.DataFrame],
+    cards: pd.DataFrame,
+    fake: Faker,
+    rng: np.random.Generator,
+    window_start: datetime,
+    window_seconds: int,
+) -> tuple[pd.DataFrame, int, int]:
+    """Inject legitimate foreign travel episodes for ~4% of cards.
+
+    Each travel card gets a single episode of 2-6 normal transactions
+    (is_fraud_actual=False) in a single foreign country, occurring strictly
+    after that card's 5th chronologically ordered transaction across the
+    entire dataset. Episode rows replace an equal number of the card's
+    ordinary post-5th normal transactions.
+
+    Args:
+        normal_df: Base normal transactions DataFrame.
+        anomaly_parts: List of fraudulent anomaly transaction DataFrames.
+        cards: Card-profile lookup DataFrame.
+        fake: Faker instance.
+        rng: Seeded NumPy random generator.
+        window_start: Window start datetime.
+        window_seconds: Total seconds in observation window.
+
+    Returns:
+        tuple containing:
+          - Updated normal_df with travel episode rows replacing ordinary normal rows.
+          - Number of cards receiving an episode.
+          - Number of episode transactions created.
+    """
+    low_med, high_travel_ok = _load_travel_destination_pools()
+
+    # Find the 5th transaction timestamp (t5) per card across normal and anomaly rows
+    frames = cast(
+    list[pd.DataFrame],
+    [normal_df[["card_id", "timestamp"]]]
+    + [p[["card_id", "timestamp"]] for p in anomaly_parts],
+    )
+    all_ref = pd.concat(frames, ignore_index=True)
+    all_ref = all_ref.sort_values(["card_id", "timestamp"]).reset_index(drop=True)
+    all_ref["card_txn_rank"] = all_ref.groupby("card_id").cumcount()
+    t5_series = all_ref[all_ref["card_txn_rank"] == 4].set_index("card_id")["timestamp"]
+
+    normal_with_t5 = normal_df.copy()
+    normal_with_t5["t5"] = normal_with_t5["card_id"].map(t5_series)
+    is_post_5 = normal_with_t5["timestamp"] > normal_with_t5["t5"]
+
+    # Select cards that have >= 6 post-t5 normal transactions to replace
+    post5_counts = normal_with_t5[is_post_5].groupby("card_id").size()
+    mask = (post5_counts >= 6).to_numpy()
+    eligible_cards = post5_counts.index.to_numpy()[mask]
+
+    n_travel_cards = round(len(cards) * TRAVEL_CARD_FRAC)
+    travel_card_ids = rng.choice(eligible_cards, size=n_travel_cards, replace=False)
+
+    card_lookup = cards.set_index("card_id")
+    drop_indices: list[int] = []
+    episode_dfs: list[pd.DataFrame] = []
+
+    for cid in travel_card_ids:
+        card_row = card_lookup.loc[cid]
+        home_country = card_row["home_country"]
+
+        # Destination selection: 10-15% high-tier (FATF grey list only, travel_ok: true)
+        if rng.random() < TRAVEL_HIGH_RISK_FRAC:
+            dest_pool = [c for c in high_travel_ok if c != home_country]
+        else:
+            dest_pool = [c for c in low_med if c != home_country]
+
+        destination = str(rng.choice(dest_pool))
+        k = int(rng.integers(2, 7))
+
+        t5 = t5_series.loc[cid]
+        offset_5 = int((t5 - window_start).total_seconds())
+        duration_days = int(rng.integers(2, 6))
+        min_trip_day = offset_5 // 86_400 + 1
+        max_trip_day = WINDOW_DAYS - duration_days
+        trip_start_day = (
+            int(rng.integers(min_trip_day, max_trip_day + 1))
+            if max_trip_day >= min_trip_day
+            else min_trip_day
+        )
+
+        day_offsets = rng.integers(0, duration_days, size=k)
+        raw_day_seconds = (trip_start_day + day_offsets) * 86_400
+        hour_bias = rng.normal(loc=14 * 3600, scale=4 * 3600, size=k) % 86_400
+        offsets = np.clip(raw_day_seconds + hour_bias, 0, window_seconds - 1).astype(int)
+        # Ensure timestamps are strictly after t5
+        offsets = np.maximum(offsets, offset_5 + 3600)
+        offsets = np.clip(offsets, 0, window_seconds - 1)
+        offsets.sort()
+        timestamps = [window_start + timedelta(seconds=int(s)) for s in offsets]
+
+        amounts = np.abs(
+            rng.normal(
+                card_row["typical_amount_mean"],
+                card_row["typical_amount_std"],
+                size=k,
+            )
+        ).round(2)
+        amounts = np.clip(amounts, 1.0, 5000.0)
+
+        cats: list[str] = []
+        for _ in range(k):
+            if rng.random() < 0.85:
+                cats.append(rng.choice(TRAVEL_PRIMARY_CATEGORIES))
+            else:
+                cats.append(rng.choice(STANDARD_MERCHANT_CATEGORIES))
+
+        channels = rng.choice(
+            TRAVEL_CHANNEL_OPTIONS, size=k, p=TRAVEL_CHANNEL_WEIGHTS
+        )
+        dev_ids = np.where(
+            channels == "online",
+            [f"DEV-{rng.integers(100000, 999999)}" for _ in range(k)],
+            "N/A",
+        )
+        trip_city = fake.city()
+
+        ep_df = pd.DataFrame(
+            {
+                "transaction_id": [str(uuid.uuid4()) for _ in range(k)],
+                "card_id": cid,
+                "cardholder_name": card_row["cardholder_name"],
+                "timestamp": timestamps,
+                "amount": amounts,
+                "merchant_name": [fake.company() for _ in range(k)],
+                "merchant_category": cats,
+                "merchant_country": destination,
+                "transaction_city": trip_city,
+                "transaction_country": destination,
+                "channel": channels,
+                "device_id": dev_ids,
+                "is_fraud_actual": False,
+            }
+        )
+        episode_dfs.append(ep_df)
+
+        card_post5_idx = normal_with_t5[
+            (normal_with_t5["card_id"] == cid) & is_post_5
+        ].index
+        drop_idx = rng.choice(card_post5_idx, size=k, replace=False)
+        drop_indices.extend(drop_idx)
+
+    normal_df_retained = normal_df.drop(index=drop_indices)
+    all_episodes = pd.concat(episode_dfs, ignore_index=True)
+    final_normal_df = pd.concat([normal_df_retained, all_episodes], ignore_index=True)
+
+    return final_normal_df, len(travel_card_ids), len(all_episodes)
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -714,6 +909,11 @@ def generate_synthetic_transactions(
         ),
     ]
 
+    # Inject legitimate foreign travel episodes (~4% of cards, strictly post-t5)
+    normal_df, n_travel_cards, n_episode_rows = _inject_travel_episodes(
+        normal_df, anomaly_parts, cards, fake, rng, window_start, window_seconds
+    )
+
     # ------------------------------------------------------------------
     # 4. Concatenate, shuffle, reset index
     # ------------------------------------------------------------------
@@ -751,7 +951,7 @@ def generate_synthetic_transactions(
     output_path.parent.mkdir(parents=True, exist_ok=True)
     df.to_csv(output_path, index=False)
 
-    fraud_count = df["is_fraud_actual"].sum()
+    fraud_count = int(df["is_fraud_actual"].sum())
     fraud_pct = fraud_count / len(df) * 100
     logger.info(
         "Saved %d transactions (%d fraud, %.2f%%) to %s",
@@ -760,6 +960,32 @@ def generate_synthetic_transactions(
         fraud_pct,
         output_path,
     )
+
+    card_home_map = cards.set_index("card_id")["home_country"]
+    norm_df = df[~df["is_fraud_actual"]]
+    norm_home = norm_df["card_id"].map(card_home_map)
+    diff_country_count = int((norm_df["transaction_country"] != norm_home).sum())
+    diff_country_share = float((norm_df["transaction_country"] != norm_home).mean())
+
+    with open(_COUNTRY_RISK_PATH, "r", encoding="utf-8") as f:
+        cr_data = yaml.safe_load(f)
+    high_tier_countries = [
+        c["code"] for c in cr_data["countries"] if c.get("threat_tier") == "high"
+    ]
+    norm_high_tier_count = int(
+        norm_df["transaction_country"].isin(high_tier_countries).sum()
+    )
+
+    print(f"Cards with travel episode: {n_travel_cards}")
+    print(f"Travel episode rows: {n_episode_rows}")
+    print(
+        f"Share of normal rows with foreign country: {diff_country_share * 100:.2f}% "
+        f"({diff_country_count} rows)"
+    )
+    print(f"Normal rows in high-tier countries: {norm_high_tier_count}")
+    print(f"Total rows: {len(df)}")
+    print(f"Fraud count: {fraud_count} ({fraud_pct:.2f}%)")
+
     return df
 
 
@@ -772,10 +998,4 @@ if __name__ == "__main__":
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
-    df = generate_synthetic_transactions()
-    print(f"\nDataset shape : {df.shape}")
-    print(
-        f"Fraud records : {df['is_fraud_actual'].sum()} "
-        f"({df['is_fraud_actual'].mean() * 100:.2f}%)"
-    )
-    print(f"\nSample rows:\n{df.head(5).to_string(index=False)}")
+    generate_synthetic_transactions()

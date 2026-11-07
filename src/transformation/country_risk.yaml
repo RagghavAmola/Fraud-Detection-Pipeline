@@ -26,6 +26,7 @@ countries:
   - code: "AO"
     name: "Angola"
     threat_tier: "high"  # FATF grey list
+    travel_ok: true
   - code: "AU"
     name: "Australia"
     threat_tier: "low"
@@ -83,3 +84,4 @@ countries:
   - code: "VN"
     name: "Vietnam"
     threat_tier: "high"  # FATF grey list
+    travel_ok: true
