@@ -15,13 +15,13 @@ DATA_PATH = _REPO_ROOT / "data" / "processed" / "transactions_enriched.csv"
 
 # Expected baselines (normal_rate_pct, fraud_rate_pct) in percent values
 BASELINES: dict[str, tuple[float, float]] = {
-    "is_odd_hour": (1.4, 32.5),
-    "is_new_merchant": (10.1, 73.0),
-    "amount_zscore > 3": (0.6, 30.0),
-    "is_foreign_country": (0.7, 14.5),
-    "is_foreign_country AND country_risk_tier == high": (0.05, 7.2),
+    "is_odd_hour": (1.4, 30.6),
+    "is_new_merchant": (10.3, 71.8),
+    "amount_zscore > 3": (0.6, 28.9),
+    "is_foreign_country": (0.7, 13.6),
+    "is_foreign_country AND country_risk_tier == high": (0.1, 3.9),
     "txn_velocity_10min >= 4": (0.0, 8.6),
-    "geo_jump_flag": (0.07, 0.7),
+    "geo_jump_flag": (0.1, 0.6),
 }
 
 
