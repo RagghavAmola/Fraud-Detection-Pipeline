@@ -4,20 +4,17 @@
 # As of 30 October 2026. high = on the FATF black list or grey list, or subject to extensive sanctions.
 #
 # High-tier basis:
-#   - KP and IR: FATF black list
-#   - AO and VN: FATF grey list
-#   - RU (Russia): not on the FATF black or grey list; high tier is based on extensive US/EU/UK sanctions (FATF membership is suspended).
+#   - KP, IR, MM: FATF black list
+#   - AO, VN, KE, NP, LB, VE, HT: FATF grey list
+#   - RU (Russia): not on the FATF black or grey list; in the EU high-risk third-country list since January 2026; FATF membership suspended
 #
 # Medium-tier basis:
-#   - CN, BR, IN: Emerging markets and regional financial hubs with moderate
-#     AML/CFT exposure or cash-intensive monitoring.
-#   - NG, PK: Not on FATF black or grey lists; compliance monitoring.
-#   - RO: EU member state with moderate cyber fraud monitoring profile.
-#   - UA: Active conflict zone financial integrity monitoring.
+#   - Emerging markets, regional trade/financial hubs
+#     (e.g., BR, CN, IN, NG, PK, RO, UA, AR, CL, CO, EG, ID, MX, MY, PH, TH, ZA).
 #
 # Low-tier basis:
-#   - US, GB, CA, AU, DE, FR, JP, SG: Major FATF core member jurisdictions with
-#     advanced economies, mature regulatory frameworks, and low baseline risk.
+#   - Advanced economies with mature regulatory frameworks and low baseline risk 
+#     (e.g., US, GB, CA, AU, DE, FR, JP, SG, AT, BE, CH, DK, ES, FI, IE, IT, KR, NL, NO, NZ, PL, SE).
 # ===========================================================================
 
 default_tier: "medium"
@@ -27,61 +24,160 @@ countries:
     name: "Angola"
     threat_tier: "high"  # FATF grey list
     travel_ok: true
+    home_ok: true
+  - code: "AR"
+    name: "Argentina"
+    threat_tier: "medium"  # FATF member; emerging market financial monitoring
+  - code: "AT"
+    name: "Austria"
+    threat_tier: "low"  # FATF core member; robust banking supervision and low baseline AML risk
   - code: "AU"
     name: "Australia"
     threat_tier: "low"
+  - code: "BE"
+    name: "Belgium"
+    threat_tier: "low"  # FATF core member; EU financial center AML framework
   - code: "BR"
     name: "Brazil"
     threat_tier: "medium"
   - code: "CA"
     name: "Canada"
     threat_tier: "low"
+  - code: "CH"
+    name: "Switzerland"
+    threat_tier: "low"  # FATF core member; mature financial governance and AML regulations
+  - code: "CL"
+    name: "Chile"
+    threat_tier: "medium"  # OECD member; Latin American financial integrity monitoring
   - code: "CN"
     name: "China"
     threat_tier: "medium"
+  - code: "CO"
+    name: "Colombia"
+    threat_tier: "medium"  # GAFILAT member; ongoing financial integrity and AML monitoring
   - code: "DE"
     name: "Germany"
     threat_tier: "low"
+  - code: "DK"
+    name: "Denmark"
+    threat_tier: "low"  # FATF core member; high institutional transparency and low corruption
+  - code: "EG"
+    name: "Egypt"
+    threat_tier: "medium"  # MENAFATF member; regional trade and cross-border remittance monitoring
+  - code: "ES"
+    name: "Spain"
+    threat_tier: "low"  # FATF core member; comprehensive AML/CFT preventative framework
+  - code: "FI"
+    name: "Finland"
+    threat_tier: "low"  # FATF core member; robust anti-financial crime controls
   - code: "FR"
     name: "France"
     threat_tier: "low"
   - code: "GB"
     name: "United Kingdom"
     threat_tier: "low"
+  - code: "HT"
+    name: "Haiti"
+    threat_tier: "high"  # FATF grey list
+    home_ok: true
+  - code: "ID"
+    name: "Indonesia"
+    threat_tier: "medium"  # FATF member; emerging economy AML framework monitoring
+  - code: "IE"
+    name: "Ireland"
+    threat_tier: "low"  # FATF core member; major international financial and technology hub
   - code: "IN"
     name: "India"
     threat_tier: "medium"
   - code: "IR"
     name: "Iran"
     threat_tier: "high"  # FATF black list
+  - code: "IT"
+    name: "Italy"
+    threat_tier: "low"  # FATF core member; rigorous AML controls and anti-mafia financial oversight
   - code: "JP"
     name: "Japan"
     threat_tier: "low"
+  - code: "KE"
+    name: "Kenya"
+    threat_tier: "high"  # FATF grey list
+    travel_ok: true
+    home_ok: true
   - code: "KP"
     name: "North Korea"
     threat_tier: "high"  # FATF black list
+  - code: "KR"
+    name: "South Korea"
+    threat_tier: "low"  # FATF core member; advanced electronic financial compliance framework
+  - code: "LB"
+    name: "Lebanon"
+    threat_tier: "high"  # FATF grey list
+    home_ok: true
+  - code: "MM"
+    name: "Myanmar"
+    threat_tier: "high"  # FATF black list
+  - code: "MX"
+    name: "Mexico"
+    threat_tier: "medium"  # FATF member; cross-border financial transaction monitoring
+  - code: "MY"
+    name: "Malaysia"
+    threat_tier: "medium"  # FATF member; regional trade and electronic payments compliance monitoring
   - code: "NG"
     name: "Nigeria"
     threat_tier: "medium"
+  - code: "NL"
+    name: "Netherlands"
+    threat_tier: "low"  # FATF core member; sophisticated AML transaction monitoring
+  - code: "NO"
+    name: "Norway"
+    threat_tier: "low"  # FATF core member; high institutional integrity and AML compliance
+  - code: "NP"
+    name: "Nepal"
+    threat_tier: "high"  # FATF grey list
+    travel_ok: true
+    home_ok: true
+  - code: "NZ"
+    name: "New Zealand"
+    threat_tier: "low"  # FATF core member; stringent financial intelligence regulations
+  - code: "PH"
+    name: "Philippines"
+    threat_tier: "medium"  # APG member; enhanced AML compliance monitoring
   - code: "PK"
     name: "Pakistan"
     threat_tier: "medium"
+  - code: "PL"
+    name: "Poland"
+    threat_tier: "low"  # EU member state; mature financial supervisory framework
   - code: "RO"
     name: "Romania"
     threat_tier: "medium"
   - code: "RU"
     name: "Russia"
-    threat_tier: "high"  # RU (Russia): not on the FATF black or grey list; high tier is based on extensive US/EU/UK sanctions (FATF membership is suspended).
+    threat_tier: "high"  # not on the FATF black or grey list; in the EU high-risk third-country list since January 2026; FATF membership suspended
+  - code: "SE"
+    name: "Sweden"
+    threat_tier: "low"  # FATF core member; advanced Nordic AML supervisory system
   - code: "SG"
     name: "Singapore"
     threat_tier: "low"
+  - code: "TH"
+    name: "Thailand"
+    threat_tier: "medium"  # APG member; regional financial hub AML monitoring
   - code: "UA"
     name: "Ukraine"
     threat_tier: "medium"
   - code: "US"
     name: "United States"
     threat_tier: "low"
+  - code: "VE"
+    name: "Venezuela"
+    threat_tier: "high"  # FATF grey list
+    home_ok: true
   - code: "VN"
     name: "Vietnam"
     threat_tier: "high"  # FATF grey list
     travel_ok: true
+    home_ok: true
+  - code: "ZA"
+    name: "South Africa"
+    threat_tier: "medium"  # FATF member; emerging market regional financial monitoring

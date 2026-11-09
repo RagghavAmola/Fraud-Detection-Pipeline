@@ -64,13 +64,23 @@ HIGH_RISK_MERCHANT_CATEGORIES: Final[list[str]] = [
 CHANNEL_OPTIONS: Final[list[str]] = ["online", "in-store", "atm"]
 CHANNEL_WEIGHTS: Final[list[float]] = [0.45, 0.45, 0.10]
 
-# Country pools — "home" countries are common; "abroad" countries trigger anomaly
+# Country pools — home countries (low, medium, and select grey-list high risk jurisdictions)
 HOME_COUNTRIES: Final[list[str]] = [
-    "US", "GB", "CA", "AU", "DE", "FR", "IN", "SG", "JP", "BR",
+    "US", "GB", "CA", "DE", "FR", "IN", "AU",  # Large markets (~70.3%)
+    "JP", "BR", "SG", "IT", "ES", "NL", "MX",  # Mid-tier markets (~17.1%)
+    "CN", "CH", "SE", "KR", "NG", "PK", "RO", "ZA",  # Long-tail markets (~7.6%)
+    "VN", "KE", "NP", "LB", "VE", "HT", "AO",  # High-risk grey-list homes (~5.0%)
 ]
-ABROAD_COUNTRIES: Final[list[str]] = [
-    "NG", "RU", "CN", "UA", "RO", "VN", "KP", "IR", "PK", "AO",
+HOME_COUNTRY_WEIGHTS: Final[list[float]] = [
+    0.266, 0.114, 0.076, 0.0665, 0.057, 0.0665, 0.057,
+    0.038, 0.0285, 0.0285, 0.019, 0.019, 0.019, 0.019,
+    0.01425, 0.01425, 0.0095, 0.0095, 0.0095, 0.0095, 0.00475, 0.00475,
+    0.015, 0.015, 0.005, 0.005, 0.005, 0.0025, 0.0025,
 ]
+
+# Foreign fraud country distribution weights by threat tier
+FRAUD_TIER_OPTIONS: Final[list[str]] = ["low", "medium", "high"]
+FRAUD_TIER_WEIGHTS: Final[list[float]] = [0.40, 0.35, 0.25]
 
 # Travel episode configuration
 TRAVEL_CARD_FRAC: Final[float] = 0.04
@@ -90,6 +100,113 @@ _COUNTRY_RISK_PATH: Final[Path] = (
 # Output path (relative to the repo root)
 _RAW_DATA_DIR: Final[Path] = Path(__file__).resolve().parents[2] / "data" / "raw"
 DEFAULT_OUTPUT_PATH: Final[Path] = _RAW_DATA_DIR / "transactions.csv"
+
+
+# ---------------------------------------------------------------------------
+# Country Risk Helpers & Startup Validation
+# ---------------------------------------------------------------------------
+
+def _load_country_risk_tiers(
+    config_path: Path = _COUNTRY_RISK_PATH,
+) -> dict[str, list[str]]:
+    """Load country codes grouped by threat tier from country_risk.yaml."""
+    with open(config_path, "r", encoding="utf-8") as f:
+        data = yaml.safe_load(f)
+    countries = data.get("countries", [])
+    tiers: dict[str, list[str]] = {"low": [], "medium": [], "high": []}
+    for c in countries:
+        tier = c.get("threat_tier", data.get("default_tier", "medium"))
+        if tier in tiers:
+            tiers[tier].append(c["code"])
+    return tiers
+
+
+def _load_travel_destination_pools(
+    config_path: Path = _COUNTRY_RISK_PATH,
+) -> tuple[list[str], list[str]]:
+    """Load allowable foreign travel destinations from country_risk.yaml.
+
+    Returns:
+        tuple containing:
+          - low_med: list of ISO country codes in low and medium threat tiers.
+          - high_travel_ok: list of ISO country codes in high threat tier that
+            have travel_ok: True (e.g. FATF grey-list countries, excluding
+            black-list or sanctioned countries).
+    """
+    with open(config_path, "r", encoding="utf-8") as f:
+        data = yaml.safe_load(f)
+    countries = data.get("countries", [])
+    low_med = [
+        c["code"] for c in countries if c.get("threat_tier") in ("low", "medium")
+    ]
+    high_travel_ok = [
+        c["code"]
+        for c in countries
+        if c.get("threat_tier") == "high" and c.get("travel_ok") is True
+    ]
+    return low_med, high_travel_ok
+
+
+def _verify_generator_countries(config_path: Path = _COUNTRY_RISK_PATH) -> None:
+    """Verify at startup that every country code the generator can emit exists in YAML.
+
+    Raises:
+        FileNotFoundError: If the YAML table is missing.
+        ValueError: If any country code that can be emitted is missing from the YAML.
+    """
+    if not config_path.exists():
+        raise FileNotFoundError(f"Country risk config not found: {config_path}")
+
+    with open(config_path, "r", encoding="utf-8") as f:
+        data = yaml.safe_load(f)
+
+    yaml_codes = {c["code"] for c in data.get("countries", []) if "code" in c}
+
+    if len(HOME_COUNTRIES) != len(HOME_COUNTRY_WEIGHTS):
+       raise ValueError("HOME_COUNTRIES and HOME_COUNTRY_WEIGHTS differ in length")
+    if abs(sum(HOME_COUNTRY_WEIGHTS) - 1.0) > 1e-9:
+       raise ValueError("HOME_COUNTRY_WEIGHTS must sum to 1")
+
+    # Verify home countries
+    missing_home = set(HOME_COUNTRIES) - yaml_codes
+    if missing_home:
+        raise ValueError(
+            f"HOME_COUNTRIES contains codes not defined in {config_path}: {sorted(missing_home)}"
+        )
+
+    # Verify foreign fraud tiers
+    tiers = _load_country_risk_tiers(config_path)
+    all_fraud = {c for codes in tiers.values() for c in codes}
+    missing_fraud = all_fraud - yaml_codes
+    if missing_fraud:
+        raise ValueError(
+            f"Fraud destination pools contain codes not defined in {config_path}: {sorted(missing_fraud)}"
+        )
+
+    high_tier_home_ok = {
+        c["code"]
+        for c in data.get("countries", [])
+        if c.get("threat_tier") == "high" and c.get("home_ok") is True
+    }
+    high_homes = set(HOME_COUNTRIES) & set(tiers["high"])
+    disallowed_high_homes = high_homes - high_tier_home_ok
+    if disallowed_high_homes:
+        raise ValueError(
+            f"High-tier home countries must have home_ok: true in {config_path}: {sorted(disallowed_high_homes)}"
+        )
+
+    # Verify travel pools
+    low_med, high_travel_ok = _load_travel_destination_pools(config_path)
+    all_travel = set(low_med) | set(high_travel_ok)
+    missing_travel = all_travel - yaml_codes
+    if missing_travel:
+        raise ValueError(
+            f"Travel destination pools contain codes not defined in {config_path}: {sorted(missing_travel)}"
+        )
+
+
+# Run startup validation immediately on module load
+_verify_generator_countries()
 
 
 # ---------------------------------------------------------------------------
@@ -148,7 +265,9 @@ def _build_card_profiles(
     """
     card_ids = [f"CARD-{str(uuid.uuid4()).upper()[:12]}" for _ in range(num_cards)]
     cardholder_names = [fake.name() for _ in range(num_cards)]
-    home_countries = rng.choice(HOME_COUNTRIES, size=num_cards)
+    home_countries = rng.choice(
+        HOME_COUNTRIES, size=num_cards, p=HOME_COUNTRY_WEIGHTS
+    )
 
     # Each cardholder has their own "normal" spending level (log-normal)
     typical_means = rng.lognormal(mean=3.5, sigma=0.8, size=num_cards)  # ~$33 median
@@ -431,7 +550,21 @@ def _inject_country_mismatch(
     card_indices = rng.integers(0, len(cards), size=n)
     selected_cards = cards.iloc[card_indices].reset_index(drop=True)
 
-    abroad_countries = rng.choice(ABROAD_COUNTRIES, size=n)
+    country_tiers = _load_country_risk_tiers()
+    tier_choices = rng.choice(FRAUD_TIER_OPTIONS, size=n, p=FRAUD_TIER_WEIGHTS)
+
+    abroad_countries: list[str] = []
+    for i in range(n):
+        card_home = selected_cards.iloc[i]["home_country"]
+        tier = tier_choices[i]
+        pool = [c for c in country_tiers[tier] if c != card_home]
+        if not pool:
+            all_foreign = [
+                c for codes in country_tiers.values() for c in codes if c != card_home
+            ]
+            abroad_countries.append(str(rng.choice(all_foreign)))
+        else:
+            abroad_countries.append(str(rng.choice(pool)))
     offsets = rng.integers(0, window_seconds, size=n)
     timestamps = [window_start + timedelta(seconds=int(s)) for s in offsets]
 
@@ -589,32 +722,6 @@ def _inject_risky_merchants(
             "is_fraud_actual": True,
         }
     )
-
-
-def _load_travel_destination_pools(
-    config_path: Path = _COUNTRY_RISK_PATH,
-) -> tuple[list[str], list[str]]:
-    """Load allowable foreign travel destinations from country_risk.yaml.
-
-    Returns:
-        tuple containing:
-          - low_med: list of ISO country codes in low and medium threat tiers.
-          - high_travel_ok: list of ISO country codes in high threat tier that
-            have travel_ok: True (e.g. FATF grey-list countries, excluding
-            black-list or sanctioned countries).
-    """
-    with open(config_path, "r", encoding="utf-8") as f:
-        data = yaml.safe_load(f)
-    countries = data.get("countries", [])
-    low_med = [
-        c["code"] for c in countries if c.get("threat_tier") in ("low", "medium")
-    ]
-    high_travel_ok = [
-        c["code"]
-        for c in countries
-        if c.get("threat_tier") == "high" and c.get("travel_ok") is True
-    ]
-    return low_med, high_travel_ok
 
 
 def _inject_travel_episodes(
@@ -832,6 +939,9 @@ def generate_synthetic_transactions(
         seed,
     )
 
+    # Verify country table integrity at startup
+    _verify_generator_countries()
+
     rng = np.random.default_rng(seed)
     fake = Faker()
     Faker.seed(seed)
@@ -943,6 +1053,19 @@ def generate_synthetic_transactions(
     df["timestamp"] = pd.to_datetime(df["timestamp"])
     df["amount"] = df["amount"].astype(float)
     df["is_fraud_actual"] = df["is_fraud_actual"].astype(bool)
+
+    # Verify that every emitted country code exists in YAML
+    with open(_COUNTRY_RISK_PATH, "r", encoding="utf-8") as f:
+        cr_data = yaml.safe_load(f)
+    all_yaml_codes = {c["code"] for c in cr_data.get("countries", []) if "code" in c}
+    emitted_codes = set(df["transaction_country"].unique()) | set(
+        df["merchant_country"].unique()
+    )
+    unrecognized = emitted_codes - all_yaml_codes
+    if unrecognized:
+        raise ValueError(
+            f"Generated transactions contain unrecognized country codes not in YAML: {sorted(unrecognized)}"
+        )
 
     # ------------------------------------------------------------------
     # 5. Persist to disk
