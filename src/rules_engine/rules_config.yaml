@@ -1,3 +1,96 @@
-# Fraud Detection & Credit Risk Rules Configuration
-# Configuration placeholders for threshold values, weights, and active rule toggles
-rules: []
+score_cap: 100
+
+risk_tiers:
+  - name: "Low"
+    min_score: 0
+    max_score: 24
+  - name: "Medium"
+    min_score: 25
+    max_score: 49
+  - name: "High"
+    min_score: 50
+    max_score: 74
+  - name: "Critical"
+    min_score: 75
+    max_score: 100
+
+rules:
+  - name: high_velocity
+    description: "More than 3 transactions in 10 minutes (rapid-fire bursts)"
+    field: txn_velocity_10min
+    operator: ">"
+    threshold: 3
+    weight: 25
+    enabled: true
+
+  - name: large_amount_deviation
+    description: "Amount more than 3 standard deviations above the card's history"
+    field: amount_zscore
+    operator: ">"
+    threshold: 3
+    weight: 30
+    enabled: true
+
+  - name: odd_hour
+    description: "Transaction between 1am and 4am"
+    field: is_odd_hour
+    operator: "=="
+    threshold: true
+    weight: 20
+    enabled: true
+
+  - name: high_risk_merchant
+    description: "Merchant category in the high risk tier"
+    field: merchant_risk_category
+    operator: "=="
+    threshold: "high"
+    weight: 25
+    enabled: true
+
+  - name: odd_hour_high_risk_merchant
+    description: "Odd hour AND high risk merchant (adds to the two rules above)"
+    all:
+      - {field: is_odd_hour, operator: "==", threshold: true}
+      - {field: merchant_risk_category, operator: "==", threshold: "high"}
+    weight: 15
+    enabled: true
+
+  - name: new_merchant_large_amount
+    description: "First-time merchant AND amount above 2 standard deviations"
+    all:
+      - {field: is_new_merchant, operator: "==", threshold: true}
+      - {field: amount_zscore, operator: ">", threshold: 2}
+    weight: 20
+    enabled: true
+
+  - name: foreign_high_risk_country
+    description: "Foreign transaction in a high-threat-tier country"
+    all:
+      - {field: is_foreign_country, operator: "==", threshold: true}
+      - {field: country_risk_tier, operator: "==", threshold: "high"}
+    weight: 35
+    enabled: true
+
+  - name: foreign_medium_risk_country
+    description: "Foreign transaction in a medium-tier country"
+    all:
+      - {field: is_foreign_country, operator: "==", threshold: true}
+      - {field: country_risk_tier, operator: "==", threshold: "medium"}
+    weight: 15
+    enabled: true
+
+  - name: foreign_low_risk_country
+    description: "Foreign transaction in a low-tier country"
+    all:
+      - {field: is_foreign_country, operator: "==", threshold: true}
+      - {field: country_risk_tier, operator: "==", threshold: "low"}
+    weight: 5
+    enabled: true
+
+  - name: geo_jump
+    description: "Country change within 3h of the previous transaction (disabled: catches under 1% of fraud and is noisy for legitimate travel)"
+    field: geo_jump_flag
+    operator: "=="
+    threshold: true
+    weight: 10
+    enabled: false
