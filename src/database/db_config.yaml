@@ -1,0 +1,9 @@
+database_url: "sqlite:///data/fraud.db"
+
+flagged_risk_tiers:
+  - "Medium"
+  - "High"
+  - "Critical"
+
+bulk_load_chunksize: 1000
+
