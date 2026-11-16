@@ -18,6 +18,7 @@ data/processed/*
 data/_check_*.py
 scripts/_check_*.py
 scripts/_verify_*.py
+reports/confusion_matrix_*.html
 
 # Editor (optional)
 .vscode/
