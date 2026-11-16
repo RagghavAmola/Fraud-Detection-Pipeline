@@ -8,7 +8,7 @@ from collections.abc import Generator, Sequence
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 import pandas as pd
 import yaml
@@ -99,7 +99,11 @@ class DBManager:
             db_file = self.database_url.replace("sqlite:///", "")
             Path(db_file).parent.mkdir(parents=True, exist_ok=True)
 
-        self.engine = create_engine(self.database_url)
+        connect_args: dict[str, Any] = {}
+        if self.database_url.startswith("sqlite"):
+            connect_args["check_same_thread"] = False
+
+        self.engine = create_engine(self.database_url, connect_args=connect_args)
         self.SessionLocal = sessionmaker(bind=self.engine, expire_on_commit=False)
 
     @contextmanager
@@ -324,8 +328,8 @@ class DBManager:
             if record is None:
                 return False
 
-            record.reviewed = cast(Any,True)
-            record.review_outcome = cast(Any,outcome)
+            record.reviewed = outcome != "unreviewed"    # type: ignore[assignment]
+            record.review_outcome = outcome   # type: ignore[assignment]
             return True
 
     def get_metrics(self) -> dict[str, Any]:
@@ -391,3 +395,197 @@ class DBManager:
                 "true_positives": tp_count,
                 "false_positives": fp_count,
             }
+
+    def get_total_transaction_count(self) -> int:
+        """Return the total number of transactions in TXN_TRANSACTION."""
+        with self.get_session() as session:
+            return session.query(func.count(Transaction.transaction_id)).scalar() or 0
+
+    def get_transaction_date_bounds(self) -> tuple[datetime | None, datetime | None]:
+        """Return (min_timestamp, max_timestamp) from TXN_TRANSACTION."""
+        with self.get_session() as session:
+            row = session.query(
+                func.min(Transaction.timestamp),
+                func.max(Transaction.timestamp),
+            ).first()
+            if row is None:
+                return None, None
+            return row[0], row[1]
+
+    def get_merchant_categories(self) -> list[str]:
+        """Return sorted list of distinct merchant categories in TXN_TRANSACTION."""
+        with self.get_session() as session:
+            rows = (
+                session.query(Transaction.merchant_category)
+                .distinct()
+                .order_by(Transaction.merchant_category)
+                .all()
+            )
+            return [r[0] for r in rows if r[0]]
+
+    def get_flagged_transactions_df(
+        self,
+        tiers: Sequence[str] | str | None = None,
+        date_from: datetime | str | None = None,
+        date_to: datetime | str | None = None,
+        merchant_categories: Sequence[str] | str | None = None,
+    ) -> pd.DataFrame:
+        """Query flagged transactions joined with transaction fields for dashboard reporting.
+
+        Args:
+            tiers: Risk tier string or sequence of risk tiers.
+            date_from: Inclusive start timestamp.
+            date_to: Inclusive end timestamp.
+            merchant_categories: Merchant category string or sequence of categories.
+
+        Returns:
+            pd.DataFrame containing flagged transactions joined with transaction data.
+            Never includes TXN_IS_FRAUD_ACTUAL.
+        """
+        with self.get_session() as session:
+            query = (
+                session.query(
+                    FlaggedTransaction.transaction_id,
+                    Transaction.card_id,
+                    Transaction.cardholder_name,
+                    Transaction.timestamp,
+                    Transaction.amount,
+                    Transaction.merchant_name,
+                    Transaction.merchant_category,
+                    Transaction.transaction_country,
+                    FlaggedTransaction.fraud_score,
+                    FlaggedTransaction.risk_tier,
+                    FlaggedTransaction.triggered_rules,
+                    FlaggedTransaction.flagged_at,
+                    FlaggedTransaction.reviewed,
+                    FlaggedTransaction.review_outcome,
+                    Transaction.channel,
+                    Transaction.device_id,
+                )
+                .join(
+                    Transaction,
+                    FlaggedTransaction.transaction_id == Transaction.transaction_id,
+                )
+            )
+
+            if tiers is not None:
+                if isinstance(tiers, str):
+                    query = query.filter(FlaggedTransaction.risk_tier == tiers)
+                else:
+                    query = query.filter(FlaggedTransaction.risk_tier.in_(list(tiers)))
+
+            if date_from is not None:
+                dt_from = pd.to_datetime(date_from).to_pydatetime()
+                query = query.filter(Transaction.timestamp >= dt_from)
+
+            if date_to is not None:
+                dt_to = pd.to_datetime(date_to).to_pydatetime()
+                query = query.filter(Transaction.timestamp <= dt_to)
+
+            if merchant_categories is not None:
+                if isinstance(merchant_categories, str):
+                    query = query.filter(Transaction.merchant_category == merchant_categories)
+                else:
+                    query = query.filter(Transaction.merchant_category.in_(list(merchant_categories)))
+
+            query = query.order_by(FlaggedTransaction.fraud_score.desc())
+            rows = query.all()
+
+            columns = [
+                "transaction_id",
+                "card_id",
+                "cardholder_name",
+                "timestamp",
+                "amount",
+                "merchant_name",
+                "merchant_category",
+                "transaction_country",
+                "fraud_score",
+                "risk_tier",
+                "triggered_rules",
+                "flagged_at",
+                "reviewed",
+                "review_outcome",
+                "channel",
+                "device_id",
+            ]
+
+            if not rows:
+                return pd.DataFrame(columns=columns)
+
+            return pd.DataFrame(rows, columns=columns)
+
+    def get_flagged_country_breakdown(
+        self,
+        tiers: Sequence[str] | str | None = None,
+        date_from: datetime | str | None = None,
+        date_to: datetime | str | None = None,
+        merchant_categories: Sequence[str] | str | None = None,
+    ) -> pd.DataFrame:
+        """Aggregate flagged transactions by country joined with CNR_COUNTRYRISK for threat tier and name.
+
+        Args:
+            tiers: Risk tier string or sequence of risk tiers.
+            date_from: Inclusive start timestamp.
+            date_to: Inclusive end timestamp.
+            merchant_categories: Merchant category string or sequence of categories.
+
+        Returns:
+            pd.DataFrame with columns: country_code, country_name, threat_tier, flagged_count, total_amount.
+        """
+        with self.get_session() as session:
+            query = (
+                session.query(
+                    Transaction.transaction_country.label("country_code"),
+                    func.coalesce(CountryRisk.country_name, Transaction.transaction_country).label("country_name"),
+                    func.coalesce(CountryRisk.threat_tier, "Unknown").label("threat_tier"),
+                    func.count(FlaggedTransaction.flagged_id).label("flagged_count"),
+                    func.coalesce(func.sum(Transaction.amount), 0.0).label("total_amount"),
+                )
+                .join(
+                    Transaction,
+                    FlaggedTransaction.transaction_id == Transaction.transaction_id,
+                )
+                .outerjoin(
+                    CountryRisk,
+                    Transaction.transaction_country == CountryRisk.iso_code,
+                )
+            )
+
+            if tiers is not None:
+                if isinstance(tiers, str):
+                    query = query.filter(FlaggedTransaction.risk_tier == tiers)
+                else:
+                    query = query.filter(FlaggedTransaction.risk_tier.in_(list(tiers)))
+
+            if date_from is not None:
+                dt_from = pd.to_datetime(date_from).to_pydatetime()
+                query = query.filter(Transaction.timestamp >= dt_from)
+
+            if date_to is not None:
+                dt_to = pd.to_datetime(date_to).to_pydatetime()
+                query = query.filter(Transaction.timestamp <= dt_to)
+
+            if merchant_categories is not None:
+                if isinstance(merchant_categories, str):
+                    query = query.filter(Transaction.merchant_category == merchant_categories)
+                else:
+                    query = query.filter(Transaction.merchant_category.in_(list(merchant_categories)))
+
+            query = (
+                query.group_by(
+                    Transaction.transaction_country,
+                    CountryRisk.country_name,
+                    CountryRisk.threat_tier,
+                )
+                .order_by(func.count(FlaggedTransaction.flagged_id).desc())
+            )
+
+            rows = query.all()
+            columns = ["country_code", "country_name", "threat_tier", "flagged_count", "total_amount"]
+            if not rows:
+                return pd.DataFrame(columns=columns)
+
+            df = pd.DataFrame(rows, columns=columns)
+            df["total_amount"] = df["total_amount"].round(2)
+            return df

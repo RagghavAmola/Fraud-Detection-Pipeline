@@ -165,7 +165,7 @@ def test_null_and_string_preservation(memory_db):
 
 
 # ===========================================================================
-# 3. Querying Flagged Transactions (Item 8)
+# 3. Querying Flagged Transactions
 # ===========================================================================
 
 
@@ -275,7 +275,7 @@ def test_false_positive_rate_calculation(memory_db):
 
 
 # ===========================================================================
-# 5. Database Reset & Recreate (Item 5)
+# 5. Database Reset & Recreate
 # ===========================================================================
 
 
@@ -297,7 +297,7 @@ def test_reset_database_drops_and_recreates_tables(memory_db):
 
 
 # ===========================================================================
-# 6. CountryRisk Reference Table (Item 9)
+# 6. CountryRisk Reference Table
 # ===========================================================================
 
 
@@ -313,4 +313,144 @@ def test_country_risk_loading(memory_db):
         assert "US" in codes
         assert "KP" in codes
         assert "AO" in codes
+
+
+# ===========================================================================
+# 7. Dashboard Query Helper Methods (Additive)
+# ===========================================================================
+
+
+def test_get_total_transaction_count(memory_db):
+    """Verify get_total_transaction_count returns correct row counts."""
+    assert memory_db.get_total_transaction_count() == 0
+
+    df = _build_sample_scored_df(6)
+    memory_db.bulk_load_transactions(df)
+    assert memory_db.get_total_transaction_count() == 6
+
+
+def test_get_merchant_categories_and_date_bounds(memory_db):
+    """Verify retrieval of distinct merchant categories and transaction date bounds."""
+    # Empty DB
+    min_ts, max_ts = memory_db.get_transaction_date_bounds()
+    assert min_ts is None and max_ts is None
+    assert memory_db.get_merchant_categories() == []
+
+    # Populated DB
+    df = _build_sample_scored_df(6)
+    memory_db.bulk_load_transactions(df)
+
+    categories = memory_db.get_merchant_categories()
+    assert categories == ["Retail"]
+
+    min_ts, max_ts = memory_db.get_transaction_date_bounds()
+    assert min_ts is not None and max_ts is not None
+    assert min_ts == df["timestamp"].min()
+    assert max_ts == df["timestamp"].max()
+
+def test_unreviewed_round_trip_resets_reviewed_flag(memory_db):
+    """Setting a row back to 'unreviewed' must reset reviewed to 0."""
+    df = _build_sample_scored_df(6)
+    memory_db.bulk_load_transactions(df)
+
+    flagged = memory_db.get_flagged(tier=None)
+    txn_id = flagged[0].transaction_id
+
+    before = memory_db.get_metrics()
+    assert before["total_reviewed"] == 0
+    assert before["false_positive_rate"] is None
+
+    assert memory_db.update_review_outcome(txn_id, "false_positive") is True
+    mid = memory_db.get_metrics()
+    assert mid["total_reviewed"] == 1
+    assert mid["false_positive_rate"] == 1.0
+
+    assert memory_db.update_review_outcome(txn_id, "unreviewed") is True
+    after = memory_db.get_metrics()
+    assert after["total_reviewed"] == 0
+    assert after["false_positive_rate"] is None
+
+
+def test_get_flagged_transactions_df_queries_and_filters(memory_db):
+    """Verify get_flagged_transactions_df returns joined data, respects filters, and excludes is_fraud_actual."""
+    df = _build_sample_scored_df(6)
+    memory_db.bulk_load_transactions(df)
+
+    # 1. Unfiltered query
+    flagged_df = memory_db.get_flagged_transactions_df()
+    assert len(flagged_df) == 4  # Medium (2), High (1), Critical (1)
+
+    # STRICT CHECK: Operational reporting must never include ground truth is_fraud_actual
+    assert "is_fraud_actual" not in flagged_df.columns
+    assert "TXN_IS_FRAUD_ACTUAL" not in flagged_df.columns
+
+    # Verify key columns present
+    expected_cols = {
+        "transaction_id",
+        "card_id",
+        "cardholder_name",
+        "timestamp",
+        "amount",
+        "merchant_name",
+        "merchant_category",
+        "transaction_country",
+        "fraud_score",
+        "risk_tier",
+        "triggered_rules",
+        "flagged_at",
+        "reviewed",
+        "review_outcome",
+    }
+    assert expected_cols.issubset(set(flagged_df.columns))
+
+    # Ordered by fraud score desc
+    assert flagged_df["fraud_score"].iloc[0] >= flagged_df["fraud_score"].iloc[-1]
+
+    # 2. Tier filter
+    high_crit_df = memory_db.get_flagged_transactions_df(tiers=["High", "Critical"])
+    assert len(high_crit_df) == 2
+    assert set(high_crit_df["risk_tier"]) == {"High", "Critical"}
+
+    single_tier_df = memory_db.get_flagged_transactions_df(tiers="Critical")
+    assert len(single_tier_df) == 1
+    assert single_tier_df["risk_tier"].iloc[0] == "Critical"
+
+    # 3. Date filter
+    t_mid = df["timestamp"].iloc[3]
+    date_filtered = memory_db.get_flagged_transactions_df(date_from=t_mid)
+    assert (date_filtered["timestamp"] >= t_mid).all()
+
+    # 4. Merchant category filter
+    cat_df = memory_db.get_flagged_transactions_df(merchant_categories=["Retail"])
+    assert len(cat_df) == 4
+    no_cat_df = memory_db.get_flagged_transactions_df(merchant_categories=["NonExistent"])
+    assert len(no_cat_df) == 0
+
+
+def test_get_flagged_country_breakdown(memory_db):
+    """Verify get_flagged_country_breakdown joins with CNR_COUNTRYRISK and computes aggregations."""
+    memory_db.load_country_risk()
+    df = _build_sample_scored_df(6)
+    memory_db.bulk_load_transactions(df)
+
+    geo_df = memory_db.get_flagged_country_breakdown()
+    assert not geo_df.empty
+    assert "country_code" in geo_df.columns
+    assert "country_name" in geo_df.columns
+    assert "threat_tier" in geo_df.columns
+    assert "flagged_count" in geo_df.columns
+    assert "total_amount" in geo_df.columns
+
+    # All sample transactions are US
+    us_row = geo_df[geo_df["country_code"] == "US"].iloc[0]
+    assert us_row["country_name"] == "United States"
+    assert us_row["threat_tier"] == "low"
+    assert us_row["flagged_count"] == 4
+    # Exposure: 100 + 150 + 500 + 1200 = 1950.0
+    assert us_row["total_amount"] == 1950.0
+
+    # With tier filter
+    crit_geo = memory_db.get_flagged_country_breakdown(tiers=["Critical"])
+    assert crit_geo.iloc[0]["flagged_count"] == 1
+    assert crit_geo.iloc[0]["total_amount"] == 1200.0
 

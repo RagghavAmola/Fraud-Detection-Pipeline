@@ -17,7 +17,7 @@ data/processed/*
 *.sqlite
 data/_check_*.py
 scripts/_check_*.py
-scripts/_verify_review.py
+scripts/_verify_*.py
 
 # Editor (optional)
 .vscode/
