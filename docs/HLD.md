@@ -248,29 +248,14 @@ erDiagram
 
 ---
 
-## 6. Key Design Decisions and Trade-offs
+## 6. Results and Operational Performance
 
-| # | Design Decision | Alternative Considered | Rationale & Trade-off Accepted |
-| :- | :--- | :--- | :--- |
-| **1** | **Config-Driven Heuristic Rules (YAML)** | Supervised Machine Learning models (e.g., XGBoost, LightGBM) | **Rationale:** Regulatory compliance in financial services requires deterministic, fully explainable audit trails for every flagged transaction. Rules in YAML can be inspected, audited, and adjusted by risk officers without retraining models or modifying application code.<br/>**Trade-off:** Captures fewer subtle, multi-dimensional fraud patterns than non-linear machine learning ensembles. |
-| **2** | **Prior-Only Feature Calculation** | Centered or forward-looking rolling windows | **Rationale:** Applying `.shift(1)` across cardholder event streams ensures features depend strictly on past data, eliminating lookahead leakage and mirroring live production scoring.<br/>**Trade-off:** Card histories require an initial warm-up period before meaningful statistical deviation can be calculated. |
-| **3** | **Five-Transaction Warmup Handling** | Dynamic scoring from transaction 1 | **Rationale:** Early transactions on a card have zero historical variance, causing division-by-zero or erratic Z-scores. Flagging the first 5 transactions as warmup (`is_warmup=True`) establishes a home country and spending baseline safely.<br/>**Trade-off:** The first 5 transactions per card form an intentional blind spot where rule scoring is neutral. |
-| **4** | **SQLite Embedded Database** | Client-server relational database (e.g., PostgreSQL, MySQL) | **Rationale:** Zero-configuration deployment allows the entire system, test suite, and analyst dashboard to run out-of-the-box locally without provisioning external database infrastructure.<br/>**Trade-off:** File-level write locking prevents high-concurrency multi-user triage in enterprise settings. |
-| **5** | **Rebuild-on-Every-Run Pipeline** | Incremental schema migrations (e.g., Alembic) | **Rationale:** Guarantees a deterministic, clean-slate state across raw files, features, scores, and database tables for reliable local experimentation and testing.<br/>**Trade-off:** Running the data pipeline resets the database, wiping out any analyst reviews recorded in `FTX_FLAGGEDTRANSACTION`. |
-| **6** | **One Rule per Destination Country Tier** | Dynamic continuous risk scoring function based on country indices | **Rationale:** Implementing discrete rules (`foreign_high_risk_country`, `foreign_medium_risk_country`, `foreign_low_risk_country`) bound to `is_foreign_country` allows risk officers to assign explicit point weights directly matching regulatory FATF tier classifications.<br/>**Trade-off:** Coarser granularity than continuous country-level corruption or threat perception indices. |
-| **7** | **DBManager as Sole Data Access Layer** | Direct raw SQL queries inside Streamlit views | **Rationale:** Eliminates duplicate SQL logic, centralizes query optimization and schema binding in one class, and guarantees that dashboard layout changes cannot break relational semantics.<br/>**Trade-off:** Any new query dimension requires adding a dedicated helper method to `DBManager` and writing unit tests. |
-| **8** | **Ground Truth Isolated to Evaluation** | Including `is_fraud_actual` in dashboard views or rule logic | **Rationale:** In production banking systems, ground-truth fraud labels arrive weeks later via customer chargebacks. Stripping ground truth from feature engineering, rule scoring, and dashboard views prevents subtle data leakage and realistic operational bias.<br/>**Trade-off:** Analysts cannot see immediate ground-truth verification while reviewing alerts in the UI. |
-
----
-
-## 7. Results and Operational Performance
-
-### 7.1 Evaluation Context
+### 6.1 Evaluation Context
 System performance was empirically evaluated using `src/evaluation/evaluate.py`. 
 
 > **Important Caveat:** The figures below reflect the evaluation run conducted on **2026-11-17** (`reports/evaluation_2026-11-17.md`) on a single synthetic dataset of 50,000 transactions. These metrics measure rule engine efficacy against synthetic injection patterns; real-world performance will vary with authentic payment distributions.
 
-### 7.2 Dataset Summary
+### 6.2 Dataset Summary
 - **Total Transactions:** 50,000
 - **Normal Transactions:** 48,600 (97.20%)
 - **Actual Fraud Transactions:** 1,400 (2.80%)
@@ -281,7 +266,7 @@ System performance was empirically evaluated using `src/evaluation/evaluate.py`.
   - `Low` (Score 0–24): 48,899 transactions
   - **Total Scored:** 50,000 transactions
 
-### 7.3 Multi-Threshold Evaluation
+### 6.3 Multi-Threshold Evaluation
 
 | Metric | Medium and above (Score ≥ 25) | High and above (Score ≥ 50) | Critical only (Score ≥ 75) |
 | :--- | :---: | :---: | :---: |
@@ -296,7 +281,7 @@ System performance was empirically evaluated using `src/evaluation/evaluate.py`.
 | **False-Positive Rate (FPR)** | **0.65%** | **0.11%** | **0.00%** |
 | **Normal Rows Flagged** | 315 | 54 | 0 |
 
-### 7.4 Confusion Matrices
+### 6.4 Confusion Matrices
 
 #### Medium and Above (Score ≥ 25)
 ```
@@ -319,7 +304,7 @@ Actual Normal           48,600 (TN)             0 (FP)
 Actual Fraud             1,356 (FN)            44 (TP)
 ```
 
-### 7.5 Per-Rule Performance Analysis
+### 6.5 Per-Rule Performance Analysis
 
 | Rule Identifier | Normal Fired (FP) | Fraud Fired (TP) | Precision | Recall |
 | :--- | :---: | :---: | :---: | :---: |
@@ -335,9 +320,8 @@ Actual Fraud             1,356 (FN)            44 (TP)
 
 ---
 
-## 8. Limitations and Lessons Learned
+## 7. Limitations
 
-### 8.1 Honest System Limitations
 - **Synthetic Data Generative Artifacts:** All data is synthesized. The generator only routes high-risk merchant categories (crypto, gambling) to fraud-injected transactions; consequently, `high_risk_merchant` achieves 100% precision because legitimate cardholders never visit these categories in the simulation.
 - **Absence of Legitimate Velocity Bursts:** All rapid transactions (5 txns in 5 min) are injected as fraud. Real payment networks exhibit legitimate bursts (e.g., transit gates, automated billing retries).
 - **Narrow Spending Distributions:** Transaction amounts are sampled from a single log-normal curve per card, lacking the heavy-tailed distributions and multi-modal spending patterns of real consumer portfolios.
@@ -345,105 +329,39 @@ Actual Fraud             1,356 (FN)            44 (TP)
 - **Disabled Heuristic:** `geo_jump` is disabled because commercial flight travel and timezone differences create excessive false alarms while capturing less than 1% of fraud.
 - **No Production Security:** The analyst dashboard lacks authentication, role-based authorization, and session encryption.
 
-### 8.2 Bugs Found and Lessons Learned During Build
-1. **Hour-of-Day Shift from Clock-Anchored Timestamps:**
-   - *Issue Encountered:* In `data_loader.py`, the 90-day observation window was originally anchored to `datetime.now()`. When tests ran across midnight or across different developer timezones, transaction timestamps shifted relative to wall-clock time, causing tests asserting fixed hour distributions (e.g., odd hours 1am–4am) to fail intermittently.
-   - *Lesson Learned:* Temporal simulations must either anchor to a fixed historical epoch or calculate date arithmetic strictly relative to the observation window start rather than the system clock.
-2. **Circularity Risk of Hand-Picked Country Lists:**
-   - *Issue Encountered:* `country_risk.yaml` defines 50 countries mapped to FATF threat tiers. In early generator iterations, fraud injection sampled solely from FATF high-risk jurisdictions while legitimate travel sampled solely from low-risk jurisdictions. This created circular validation: the `foreign_high_risk_country` rule achieved artificial 100% precision because normal transactions were artificially barred from entering those countries.
-   - *Lesson Learned:* Real-world evaluation requires injecting realistic edge cases. We introduced legitimate travel episodes where 4% of normal cardholders travel internationally, with 12% visiting FATF grey-list destinations. This produced 26 legitimate false positives for `foreign_high_risk_country`, lowering precision to a realistic 67.50%.
-3. **Data Leakage in Expanding Window Calculations:**
-   - *Issue Encountered:* Calculating rolling means and standard deviations without shifting the series allowed the current transaction amount to influence its own historical baseline, artificially deflating Z-scores for sudden high-value spikes.
-   - *Lesson Learned:* Strict point-in-time calculation requires applying `.shift(1)` after card-level grouping, ensuring the current transaction is evaluated entirely against prior events.
-4. **SQLite Cross-Thread Locking in Streamlit:**
-   - *Issue Encountered:* Streamlit manages UI interactions across dynamic worker threads. Standard SQLAlchemy SQLite configurations threw `ProgrammingError: SQLite objects created in a thread can only be used in that same thread`.
-   - *Lesson Learned:* Desktop and lightweight analytical dashboards using SQLite must explicitly disable same-thread checking via `connect_args={"check_same_thread": False}` and scope session lifecycles cleanly around individual database queries.
-
 ---
 
-## 9. Technical Interview Guide
-
-### 9.1 Two-Minute Pitch
-> "I built an end-to-end Fraud Risk Detection & Credit Risk Monitoring platform designed to solve the critical trade-off between unmitigated fraud loss and analyst alert fatigue. 
->
-> The system simulates 50,000 transactions across 2,000 cards, incorporating authentic diurnal spending, legitimate foreign travel, and 1,400 injected fraud events across five distinct typologies. It extracts 11 leakage-safe behavioral and velocity features using prior-only expanding windows and a 5-transaction warmup baseline. A declarative, vectorized heuristic rule engine configured in YAML evaluates boolean masks, sums additive weights, and maps transactions into four risk tiers.
->
-> Scored transactions and audit trails are persisted into an enterprise-patterned SQLite database with three-letter column prefixes. Fraud analysts triage alerts in an interactive Streamlit console that features multi-axis filtering, portfolio KPIs, and direct review write-back that updates false-positive rates live. 
->
-> Offline evaluation confirms that our Critical tier achieves 100% precision with zero false positives across 48,600 normal rows—making it safe for automated blocking—while our High tier achieves 88.4% precision for operational triage. The platform is supported by 76 automated tests."
-
-### 9.2 Five-Minute Walkthrough Outline
-1. **Section 1 & 2: Purpose & Architecture (1 min):** Explain the operational trade-off between fraud capture and analyst alert fatigue. Walk through the modular layers: generation, feature enrichment, declarative rule scoring, SQLite persistence, and Streamlit triage.
-2. **Section 3 & 4: Data Flow & Feature Engineering (1 min):** Detail how raw transactions move to enriched CSV. Highlight the 11 point-in-time features, prior-only `.shift(1)` expanding windows, and the 5-transaction warmup baseline that prevents early false alarms.
-3. **Section 4 & 5: Heuristic Scoring & Relational Schema (1 min):** Walk through `rules_config.yaml` and vectorized boolean masks. Explain score capping at 100, the four risk tiers, and why `geo_jump` was disabled. Detail the 3-letter prefix schema (`TXN_`, `FTX_`, `RAU_`, `CNR_`) and compound indexing.
-4. **Section 4 & 5: Analyst Console & Review Loop (1 min):** Demonstrate `dashboard/app.py`. Show how `DBManager` abstracts database interactions, how multi-axis filters operate, and how analysts record review outcomes via `st.data_editor` to update live FPR metrics.
-5. **Section 7 & 8: Quantitative Results & Lessons Learned (1 min):** Review empirical metrics from the 2026-11-17 report. Highlight 100% precision at Critical vs 71.4% at Medium, explain how we eliminated circularity in travel modeling, and discuss the clock-anchoring bug and its resolution.
-
-### 9.3 Ten Grounded Interview Questions & Answers
-
-#### Q1: How did you ensure zero future data leakage during feature engineering?
-**Answer:** All feature calculations in `src/transformation/feature_engineering.py` are strictly prior-only. Transactions are sorted chronologically by card account. When calculating expanding statistical baselines (mean and standard deviation) or velocity counts (10m and 1h intervals), we apply `.shift(1)` within each card group. This guarantees that the transaction under evaluation is excluded from its own historical baseline. Furthermore, the first 5 transactions per card are flagged as `is_warmup=True` and assigned neutral baseline Z-scores of 0.0.
-
-#### Q2: Why did you choose a declarative heuristic rule engine over supervised machine learning?
-**Answer:** Banking regulations (e.g., Fair Credit Reporting Act, adverse action notices) require transparent, auditable justifications for declining or flagging transactions. Heuristic rules configured via YAML provide deterministic traceability: every point contributing to a fraud score maps directly to an audited rule in `RAU_RULEAUDIT`. Rules can be tuned, enabled, or disabled immediately by risk officers without retraining pipelines, verifying drift, or risking black-box bias.
-
-#### Q3: How were rule weights chosen, and what are the operational risks of tuning them?
-**Answer:** Rule weights were assigned based on empirical signal reliability: 35 points for high-threat FATF jurisdictions, 30 for extreme amount deviations (>3σ), 25 for rapid bursts and high-risk merchants, and 15–20 for secondary indicators and composite conjunctions. Tuning weights risks overfitting to synthetic distributions. For example, increasing the weight of `odd_hour` from 20 to 30 to catch more night-time fraud would push hundreds of normal late-night transactions into the High risk tier, collapsing queue precision from 88.4% down to under 50%.
-
-#### Q4: How does the system handle false positives in operational practice?
-**Answer:** False positives are triaged directly in the Streamlit review queue. Analysts inspect flagged High and Critical transactions, examine historical card patterns, and mark records as `false_positive`. Saving this outcome updates `FTX_REVIEW_OUTCOME` in the database and immediately recalculates the operational False-Positive Rate KPI displayed on the dashboard, providing risk managers with a real-time health indicator of current rule policies.
-
-#### Q5: How would this architecture scale to millions of transactions per day?
-**Answer:** The current batch architecture processes 50,000 transactions in under 2 seconds using vectorized Pandas operations. To scale to tens of millions of daily transactions, the architecture would transition as outlined in Section 10: Kafka would handle streaming ingestion, Redis would serve precomputed card velocity counters with sub-millisecond lookups, a stateless FastAPI service would score transactions in-flight, and persistent storage would move to a partitioned PostgreSQL cluster.
-
-#### Q6: How is reproducibility maintained given that timestamps and UUIDs use runtime values?
-**Answer:** Card behavior, merchant assignment, amount distributions, and fraud injections are governed deterministically by `_RNG_SEED = 42` across NumPy and Faker. While `uuid.uuid4()` generates unique string identifiers and `datetime.now()` advances the 90-day window relative to the execution date, relative temporal distances, velocity counts, and statistical Z-scores remain identical across runs, ensuring mathematical reproducibility.
-
-#### Q7: What is the purpose of the 5-transaction warmup period, and what blind spot does it create?
-**Answer:** During a card's first few transactions, sample variance is near zero, causing trivial spending variations to generate massive Z-scores. The 5-transaction warmup suppresses scoring until a baseline spending mean, standard deviation, and mode home country are established. The trade-off is an intentional operational blind spot: account takeover or stolen card fraud occurring within the first 5 transactions cannot be detected via deviation heuristics.
-
-#### Q8: What circularity risk did you encounter between the data generator and evaluation?
-**Answer:** If the data generator injects foreign fraud exclusively into countries listed in `country_risk.yaml`, while restricting normal transactions to domestic purchases, the `foreign_high_risk_country` rule achieves an artificial 100% precision. We broke this circularity by introducing legitimate travel episodes for 4% of cards, with 12% traveling to FATF grey-list countries. This forced the rule engine to encounter realistic legitimate travel, yielding 26 false positives and a true precision of 67.50%.
-
-#### Q9: Why does the pipeline drop and rebuild the database on every run?
-**Answer:** The rebuild-on-every-run design (`reset_database()`) was chosen for rapid development and testing determinism, ensuring that schema modifications, configuration updates, and feature changes take effect immediately without managing migration drift or orphaned records. In an enterprise production environment, this would be replaced by Alembic schema migrations over PostgreSQL to preserve analyst review history permanently.
-
-#### Q10: How does the dashboard write back review determinations without raw SQL?
-**Answer:** In `dashboard/app.py`, review determinations are captured via `st.data_editor` and written back through `DBManager.update_review_outcome(transaction_id, outcome)`. This method queries the `FTX_FLAGGEDTRANSACTION` ORM entity, updates the review status, outcome, and timestamp, and commits the transaction within a safe SQLAlchemy session context. This completely eliminates raw SQL injection risks and encapsulates persistence logic within the database layer.
-
----
-
-## 10. Future Scope (NOT BUILT)
+## 8. Future Scope (NOT BUILT)
 
 > **Notice:** The following five components are **NOT BUILT** in the current repository. They represent planned architectural enhancements to evolve the system into a real-time production banking platform.
 
-### 10.1 Streaming Event Ingestion (Kafka / Redpanda / AWS Kinesis)
+### 8.1 Streaming Event Ingestion (Kafka / Redpanda / AWS Kinesis)
 - **Description:** A distributed event streaming backbone that ingests continuous payment authorization requests as partitioned JSON/Avro events at volumes exceeding 10,000 transactions per second.
 - **System Impact:** Replaces batch file ingestion (`data_loader.py` and `transactions_raw.csv`), streaming live authorization events directly into real-time scoring pipelines.
 
-### 10.2 Real-Time In-Memory Feature Store (Redis / Feast)
+### 8.2 Real-Time In-Memory Feature Store (Redis / Feast)
 - **Description:** An in-memory, low-latency key-value store maintaining per-card sliding-window velocity counters (10m, 1h) and historical spending accumulators with sub-millisecond retrieval.
 - **System Impact:** Replaces batch Pandas expanding window calculations (`feature_engineering.py`) with point-in-time online feature serving during live transaction processing.
 
-### 10.3 Low-Latency Online Scoring API (FastAPI / gRPC)
+### 8.3 Low-Latency Online Scoring API (FastAPI / gRPC)
 - **Description:** A high-availability, containerized microservice exposing a synchronous `/v1/score-transaction` endpoint that retrieves features from Redis, evaluates rules, and returns verdicts in <20ms.
 - **System Impact:** Extends the offline rule engine (`engine.py`) into an in-line payment gateway decision engine capable of declining Critical-tier transactions before card authorizations settle.
 
-### 10.4 Enterprise Relational Database & Migrations (PostgreSQL + Alembic)
+### 8.4 Enterprise Relational Database & Migrations (PostgreSQL + Alembic)
 - **Description:** A production-grade multi-AZ PostgreSQL deployment featuring connection pooling (PgBouncer), table partitioning by transaction month, and schema versioning via Alembic.
 - **System Impact:** Replaces embedded SQLite storage (`data/fraud.db`) and the destructive `reset_database()` method, permanently preserving analyst review outcomes and supporting concurrent multi-user write operations.
 
-### 10.5 Real-Time Observability & Concept Drift Monitoring (Prometheus + Grafana / Evidently AI)
+### 8.5 Real-Time Observability & Concept Drift Monitoring (Prometheus + Grafana / Evidently AI)
 - **Description:** An automated telemetry framework tracking rule firing rates, latency distributions, score distributions, and population stability index (PSI) feature drift metrics.
 - **System Impact:** Replaces static offline markdown reporting (`evaluate.py`) with continuous 24/7 production alerting across Slack and PagerDuty when rule precision degrades or fraud patterns shift.
 
 ---
 
-## 11. Discrepancies Found
+## 9. Discrepancies Found
 
 A rigorous audit was conducted comparing the build specifications and reference facts against the actual codebase implementation:
 
-### 11.1 Verification Summary
+### 9.1 Verification Summary
 - **Pipeline Architecture:** Sequential pipeline execution (`data_loader` -> `feature_engineering` -> `engine` -> `db_manager`) managed by `src/pipeline.py` verified. Database reset on every execution verified.
 - **Data & Anomaly Budget:** 50,000 transactions, 2,000 cards, 90 days, seed 42, and exactly 1,400 fraud events (2.80%) across five typologies (400 high-value, 300 bursts, 250 country mismatch, 250 unusual hours, 200 risky merchants) verified in `src/ingestion/data_loader.py`.
 - **Travel Simulation:** 4% card travel fraction (`TRAVEL_CARD_FRAC = 0.04`) and 12% high-risk grey-list fraction (`TRAVEL_HIGH_RISK_FRAC = 0.12`) starting after transaction 5 verified.
@@ -454,10 +372,10 @@ A rigorous audit was conducted comparing the build specifications and reference 
 - **Evaluation & Metrics:** Hidden ground truth isolated exclusively to `src/evaluation/evaluate.py`. Evaluation metrics match `reports/evaluation_2026-11-17.md` with 100% precision at Critical tier.
 - **Automated Tests:** 76 unit and integration tests passing verified with `pytest`.
 
-### 11.2 Noted Implementation Nuances
+### 9.2 Noted Implementation Nuances
 1. **Dynamic Observation Window Anchoring:** `window_start` in `data_loader.py` is calculated dynamically relative to `datetime.now()`. Consequently, re-running the generator on different calendar days shifts absolute timestamps while preserving relative intervals, card behaviors, and anomaly distributions.
 2. **UUID Generation:** `card_id` and `transaction_id` are generated using Python's standard `uuid.uuid4()`, which samples OS entropy rather than the seeded pseudo-random generator. Structural integrity and foreign key relationships remain fully consistent within each run.
 
-### 11.3 Final Audit Verdict
+### 9.3 Final Audit Verdict
 **Discrepancies found: None.**  
 The system implementation across all modules conforms completely to the documented reference architecture, rules configuration, database models, and evaluation benchmarks.
